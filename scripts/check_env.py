@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import httpx
+import psycopg
 
 # Scripts run as files (python scripts/x.py), so the repo root is not on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -63,7 +64,31 @@ def check_anthropic() -> None:
         raise RuntimeError(f"{resp.status_code}: {resp.text[:300]}")
 
 
-CHECKS = {"n8n": check_n8n, "anthropic": check_anthropic}
+def check_supabase() -> None:
+    try:
+        with psycopg.connect(env("DATABASE_URL"), connect_timeout=TIMEOUT) as conn:
+            conn.execute("select 1").fetchone()
+    except psycopg.OperationalError as exc:
+        # The message can echo the host but never the password.
+        raise RuntimeError(f"cannot connect: {str(exc).strip()[:300]}") from None
+
+
+def check_slack() -> None:
+    resp = httpx.post(
+        env("SLACK_WEBHOOK_URL"),
+        json={"text": "test from invoice setup"},
+        timeout=TIMEOUT,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"{resp.status_code}: {resp.text[:200]}")
+
+
+CHECKS = {
+    "n8n": check_n8n,
+    "anthropic": check_anthropic,
+    "supabase": check_supabase,
+    "slack": check_slack,
+}
 
 
 def main() -> int:
