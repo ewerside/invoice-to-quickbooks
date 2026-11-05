@@ -40,7 +40,30 @@ def check_n8n() -> None:
         )
 
 
-CHECKS = {"n8n": check_n8n}
+def check_anthropic() -> None:
+    model = env("EXTRACT_MODEL")
+    resp = httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": env("ANTHROPIC_API_KEY"),
+            "anthropic-version": "2023-06-01",
+        },
+        json={
+            "model": model,
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "Reply with the word ok."}],
+        },
+        timeout=60,
+    )
+    if resp.status_code == 401:
+        raise RuntimeError("API key rejected (401). Check ANTHROPIC_API_KEY.")
+    if resp.status_code == 404:
+        raise RuntimeError(f"model {model} not found (404). Check EXTRACT_MODEL.")
+    if resp.status_code >= 400:
+        raise RuntimeError(f"{resp.status_code}: {resp.text[:300]}")
+
+
+CHECKS = {"n8n": check_n8n, "anthropic": check_anthropic}
 
 
 def main() -> int:
