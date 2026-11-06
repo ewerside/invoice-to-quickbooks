@@ -14,8 +14,15 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "invoice-intake",
+        "authentication": "headerAuth",
         "responseMode": "responseNode",
         "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{CRED_INTAKE}}",
+          "name": "portfolio Intake Token"
+        }
       }
     },
     {
@@ -47,7 +54,25 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// One PDF per request. The model needs it as base64 text.\nconst item = $input.first();\nconst file = item.binary?.file;\nif (!file) {\n  throw new Error('No PDF found. Send it as multipart form field \"file\".');\n}\nconst buffer = await this.helpers.getBinaryDataBuffer(0, 'file');\n// Keep the binary so the next node can hash the file.\nreturn [{\n  json: { file_name: file.fileName, pdf_base64: buffer.toString('base64') },\n  binary: item.binary,\n}];"
+        "jsCode": "// One PDF per request. The model needs it as base64 text.\n// Anything else is rejected here, before it costs a model call or a database row.\nconst MAX_BYTES = 10 * 1024 * 1024;\nconst item = $input.first();\nconst file = item.binary?.file;\nif (!file) {\n  throw new Error('No PDF found. Send it as multipart form field \"file\".');\n}\nconst buffer = await this.helpers.getBinaryDataBuffer(0, 'file');\nif (buffer.length > MAX_BYTES) {\n  throw new Error(`The file has ${buffer.length} bytes. The limit is 10 MB.`);\n}\nif (buffer.subarray(0, 5).toString('latin1') !== '%PDF-') {\n  throw new Error('The file is not a PDF.');\n}\n// Keep the binary so the next node can hash the file.\nreturn [{\n  json: { file_name: file.fileName, pdf_base64: buffer.toString('base64') },\n  binary: item.binary,\n}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000023",
+      "name": "Respond rejected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        440,
+        480
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'rejected', reason: String($json.error?.message ?? $json.error ?? 'not a valid PDF') } }}",
+        "options": {
+          "responseCode": 400
+        }
       }
     },
     {
@@ -174,7 +199,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Business rules. Each rule gets the extracted invoice and returns a short code or null.\nconst TEXT_FIELDS = ['vendor_name', 'vendor_tax_id', 'invoice_number', 'invoice_date', 'due_date', 'currency'];\nconst NUMBER_FIELDS = ['subtotal', 'tax', 'total'];\nconst cents = (value) => Math.round(Number(value) * 100);\n\nfunction missingField(inv) {\n  const emptyText = TEXT_FIELDS.some((key) => !String(inv[key] ?? '').trim());\n  const emptyNumber = NUMBER_FIELDS.some((key) => typeof inv[key] !== 'number');\n  const noLines = !Array.isArray(inv.line_items) || inv.line_items.length === 0;\n  return emptyText || emptyNumber || noLines ? 'missing_field' : null;\n}\n\nfunction sumMismatch(inv) {\n  if (!Array.isArray(inv.line_items) || NUMBER_FIELDS.some((key) => typeof inv[key] !== 'number')) {\n    return null; // missing_field already covers this\n  }\n  const lines = inv.line_items.reduce((sum, line) => sum + cents(line.amount ?? 0), 0);\n  const off = (a, b) => Math.abs(a - b) > 1; // 0.01 tolerance\n  return off(lines, cents(inv.subtotal)) || off(cents(inv.subtotal) + cents(inv.tax), cents(inv.total))\n    ? 'sum_mismatch'\n    : null;\n}\n\nfunction isRealDate(text) {\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(text ?? '')) return false;\n  const parsed = new Date(`${text}T00:00:00Z`);\n  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === text;\n}\n\nfunction badDates(inv) {\n  if (!isRealDate(inv.invoice_date) || !isRealDate(inv.due_date)) return 'bad_dates';\n  return inv.due_date < inv.invoice_date ? 'bad_dates' : null;\n}\n\nfunction badTaxId(inv) {\n  const id = String(inv.vendor_tax_id ?? '').trim();\n  return /^\\d{2}-\\d{7}$/.test(id) || /^GB\\d{9}$/.test(id) ? null : 'bad_tax_id';\n}\n\nconst RULES = [missingField, sumMismatch, badDates, badTaxId];\n\nconst response = $input.first().json;\nconst call = (response.content ?? []).find((block) => block.type === 'tool_use' && block.name === 'record_invoice');\nconst extracted = call ? call.input : {};\n// No tool call means nothing was read, which is a missing field from the bookkeeper's view.\nconst issues = call ? RULES.map((rule) => rule(extracted)).filter(Boolean) : ['missing_field'];\nconst file = $('Hash file').first().json;\n\nreturn [{\n  json: {\n    file_name: file.file_name,\n    file_hash: file.file_hash,\n    extracted,\n    issues,\n    stop_reason: response.stop_reason,\n  },\n}];"
+        "jsCode": "// Business rules. Each rule gets the extracted invoice and returns a short code or null.\nconst TEXT_FIELDS = ['vendor_name', 'vendor_tax_id', 'invoice_number', 'invoice_date', 'due_date', 'currency'];\nconst NUMBER_FIELDS = ['subtotal', 'tax', 'total'];\nconst cents = (value) => Math.round(Number(value) * 100);\n\nfunction missingField(inv) {\n  const emptyText = TEXT_FIELDS.some((key) => !String(inv[key] ?? '').trim());\n  const emptyNumber = NUMBER_FIELDS.some((key) => typeof inv[key] !== 'number');\n  const noLines = !Array.isArray(inv.line_items) || inv.line_items.length === 0;\n  // A line without an amount would reach QuickBooks as a null and fail there on every try.\n  const lineWithoutAmount = !noLines && inv.line_items.some((line) => typeof line.amount !== 'number');\n  return emptyText || emptyNumber || noLines || lineWithoutAmount ? 'missing_field' : null;\n}\n\nfunction sumMismatch(inv) {\n  if (!Array.isArray(inv.line_items) || NUMBER_FIELDS.some((key) => typeof inv[key] !== 'number')) {\n    return null; // missing_field already covers this\n  }\n  const lines = inv.line_items.reduce((sum, line) => sum + cents(line.amount ?? 0), 0);\n  const off = (a, b) => Math.abs(a - b) > 1; // 0.01 tolerance\n  return off(lines, cents(inv.subtotal)) || off(cents(inv.subtotal) + cents(inv.tax), cents(inv.total))\n    ? 'sum_mismatch'\n    : null;\n}\n\nfunction isRealDate(text) {\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(text ?? '')) return false;\n  const parsed = new Date(`${text}T00:00:00Z`);\n  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === text;\n}\n\nfunction badDates(inv) {\n  if (!isRealDate(inv.invoice_date) || !isRealDate(inv.due_date)) return 'bad_dates';\n  return inv.due_date < inv.invoice_date ? 'bad_dates' : null;\n}\n\nfunction badTaxId(inv) {\n  // UK VAT numbers are often printed with spaces (GB 123 4567 89), and branches have 12 digits.\n  const id = String(inv.vendor_tax_id ?? '').replace(/\\s+/g, '');\n  return /^\\d{2}-\\d{7}$/.test(id) || /^GB(\\d{9}|\\d{12})$/.test(id) ? null : 'bad_tax_id';\n}\n\nconst RULES = [missingField, sumMismatch, badDates, badTaxId];\n\nconst response = $input.first().json;\nconst call = (response.content ?? []).find((block) => block.type === 'tool_use' && block.name === 'record_invoice');\nconst extracted = call ? call.input : {};\n// No tool call means nothing was read, which is a missing field from the bookkeeper's view.\nconst issues = call ? RULES.map((rule) => rule(extracted)).filter(Boolean) : ['missing_field'];\nconst file = $('Hash file').first().json;\n\nreturn [{\n  json: {\n    file_name: file.file_name,\n    file_hash: file.file_hash,\n    extracted,\n    issues,\n    stop_reason: response.stop_reason,\n  },\n}];"
       }
     },
     {
@@ -198,7 +223,11 @@
           "id": "{{CRED_SUPABASE}}",
           "name": "portfolio Supabase"
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
     },
     {
       "id": "5c3e9a10-7f21-4d6b-8e44-000000000009",
@@ -240,7 +269,7 @@
       ],
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "// Join the rule results with the duplicate and vendor lookups. One invoice per run.\nconst WORDS = {\n  missing_field: 'a required field is empty',\n  sum_mismatch: 'line items or totals do not add up',\n  bad_dates: 'due date is missing, invalid or before the invoice date',\n  bad_tax_id: 'tax id is not a valid EIN or UK VAT number',\n  duplicate: 'this invoice number was already posted for this vendor',\n  unknown_vendor: 'vendor is not in QuickBooks',\n};\nconst checked = $('Validate').first().json;\nconst vendor = $input.first().json;\nconst issues = [...checked.issues];\nif ($('Duplicate?').first().json.duplicate === true) issues.push('duplicate');\nif (!vendor.Id) issues.push('unknown_vendor');\n\nconst inv = checked.extracted;\nconst alertText = [\n  checked.file_name,\n  inv.vendor_name || 'no vendor name',\n  inv.invoice_number || 'no invoice number',\n  issues.map((code) => WORDS[code]).join('; '),\n].join(' | ');\n\nreturn [{\n  json: {\n    ...checked,\n    issues,\n    vendor_id: vendor.Id ?? null,\n    vendor_currency: vendor.CurrencyRef?.value ?? null,\n    alert_text: alertText,\n  },\n}];"
+        "jsCode": "// Join the rule results with the duplicate and vendor lookups. One invoice per run.\n// When QuickBooks errors, Find vendor also sends an empty item here; the failure path handles that run.\n// all(1) throws when the node made no error output at all, which is the normal case.\nconst findFailed = (() => {\n  try {\n    return $('Find vendor').all(1).length > 0;\n  } catch {\n    return false;\n  }\n})();\nif (findFailed) return [];\n\nconst checked = $('Validate').first().json;\nconst vendor = $input.first().json;\nconst inv = checked.extracted;\nconst vendorCurrency = vendor.CurrencyRef?.value ?? null;\nconst issues = [...checked.issues];\nif ($('Duplicate?').first().json.duplicate === true) issues.push('duplicate');\nif (!vendor.Id) issues.push('unknown_vendor');\n// A USD invoice from a GBP vendor would otherwise post at the wrong amount.\nif (vendor.Id && inv.currency && vendorCurrency && inv.currency !== vendorCurrency) {\n  issues.push('currency_mismatch');\n}\n\n// Reasons in words, with the numbers a bookkeeper would otherwise open the PDF to find.\nconst money = (value) => Number(value).toFixed(2);\nconst linesTotal = (inv.line_items ?? []).reduce((sum, line) => sum + Number(line.amount ?? 0), 0);\nconst REASONS = {\n  missing_field: () => 'a required field is empty',\n  sum_mismatch: () => Math.abs(linesTotal - inv.subtotal) > 0.01\n    ? `lines add up to ${money(linesTotal)} but the subtotal says ${money(inv.subtotal)}`\n    : `subtotal plus tax is ${money(inv.subtotal + inv.tax)} but the total says ${money(inv.total)}`,\n  bad_dates: () => inv.due_date && inv.invoice_date && inv.due_date < inv.invoice_date\n    ? `due date ${inv.due_date} is before the invoice date ${inv.invoice_date}`\n    : 'a date is missing or not valid',\n  bad_tax_id: () => `tax id ${inv.vendor_tax_id || '(none)'} is not a valid EIN or UK VAT number`,\n  duplicate: () => `invoice ${inv.invoice_number} was already posted for this vendor`,\n  unknown_vendor: () => 'vendor is not in QuickBooks',\n  currency_mismatch: () => `invoice is in ${inv.currency} but the vendor is set up in ${vendorCurrency}`,\n};\n// Text from the PDF goes to Slack, so it must not be able to add mentions or links.\nconst slackSafe = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst alertText = [\n  checked.file_name,\n  inv.vendor_name || 'no vendor name',\n  inv.invoice_number || 'no invoice number',\n  issues.map((code) => REASONS[code]()).join('; '),\n].map(slackSafe).join(' | ');\n\nreturn [{\n  json: {\n    ...checked,\n    issues,\n    vendor_id: vendor.Id ?? null,\n    vendor_currency: vendorCurrency,\n    alert_text: alertText,\n  },\n}];"
       }
     },
     {
@@ -288,9 +317,9 @@
       ],
       "parameters": {
         "operation": "executeQuery",
-        "query": "insert into invoice_exceptions (file_name, vendor, invoice_number, issues, extracted)\nvalues ($1, $2, $3, array(select jsonb_array_elements_text($4::jsonb)), $5::jsonb)",
+        "query": "with saved as (\n  insert into invoice_exceptions (file_name, vendor, invoice_number, issues, extracted)\n  values ($1, $2, $3, array(select jsonb_array_elements_text($4::jsonb)), $5::jsonb)\n  returning id\n),\nreleased as (\n  -- Once the cause is fixed (say, the vendor is added), the same file can be sent again.\n  delete from invoices_seen where file_hash = $6\n)\nselect id from saved",
         "options": {
-          "queryReplacement": "={{ [ $json.file_name, $json.extracted.vendor_name ?? '', $json.extracted.invoice_number ?? '', JSON.stringify($json.issues), JSON.stringify($json.extracted) ] }}"
+          "queryReplacement": "={{ [ $json.file_name, $json.extracted.vendor_name ?? '', $json.extracted.invoice_number ?? '', JSON.stringify($json.issues), JSON.stringify($json.extracted), $json.file_hash ] }}"
         }
       },
       "credentials": {
@@ -298,7 +327,11 @@
           "id": "{{CRED_SUPABASE}}",
           "name": "portfolio Supabase"
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
     },
     {
       "id": "5c3e9a10-7f21-4d6b-8e44-000000000013",
@@ -401,7 +434,7 @@
       ],
       "parameters": {
         "method": "POST",
-        "url": "https://sandbox-quickbooks.api.intuit.com/v3/company/{{QBO_REALM_ID}}/bill?minorversion=75",
+        "url": "=https://sandbox-quickbooks.api.intuit.com/v3/company/{{QBO_REALM_ID}}/bill?minorversion=75&requestid={{ $('Hash file').first().json.file_hash.slice(0, 24) }}-{{ $execution.id }}",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "quickBooksOAuth2Api",
         "sendHeaders": true,
@@ -450,7 +483,10 @@
           "id": "{{CRED_SUPABASE}}",
           "name": "portfolio Supabase"
         }
-      }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
     },
     {
       "id": "5c3e9a10-7f21-4d6b-8e44-000000000017",
@@ -504,7 +540,7 @@
         "url": "{{SLACK_WEBHOOK_URL}}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ { text: 'Failed, queued for retry: ' + $json.file_name + ' | ' + $json.node + ' | ' + String($json.error).slice(0, 200) } }}",
+        "jsonBody": "={{ { text: (esc => 'Not posted, safe to send again: ' + esc($json.file_name) + ' | failed at ' + $json.node + ' | ' + esc(String($json.error).slice(0, 200)))(text => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')) } }}",
         "options": {}
       },
       "retryOnFail": true,
@@ -523,7 +559,7 @@
       ],
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ { status: \"queued_for_retry\", file: $('Hash file').first().json.file_name } }}",
+        "responseBody": "={{ { status: \"failed\", file: $('Hash file').first().json.file_name } }}",
         "options": {
           "responseCode": 202
         }
@@ -547,6 +583,13 @@
         [
           {
             "node": "Hash file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond rejected",
             "type": "main",
             "index": 0
           }
@@ -630,6 +673,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Queue failure",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -703,6 +753,13 @@
         [
           {
             "node": "Alert Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue failure",
             "type": "main",
             "index": 0
           }

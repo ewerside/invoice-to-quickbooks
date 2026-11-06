@@ -20,7 +20,13 @@ WORKFLOWS = {
     "portfolio qbo setup": ROOT / "n8n" / "qbo-setup.json",
     "portfolio invoice intake": ROOT / "n8n" / "invoice-intake.json",
 }
-ENV_VALUES = ("SLACK_WEBHOOK_URL", "QBO_REALM_ID", "QBO_SETUP_PATH", "EXTRACT_MODEL")
+ENV_VALUES = (
+    "SLACK_WEBHOOK_URL",
+    "QBO_REALM_ID",
+    "QBO_SETUP_PATH",
+    "EXTRACT_MODEL",
+    "INTAKE_TOKEN",
+)
 
 
 def real_values() -> list[tuple[str, str]]:

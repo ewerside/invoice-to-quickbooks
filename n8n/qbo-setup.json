@@ -14,8 +14,15 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "{{QBO_SETUP_PATH}}",
+        "authentication": "headerAuth",
         "responseMode": "responseNode",
         "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{CRED_INTAKE}}",
+          "name": "portfolio Intake Token"
+        }
       }
     },
     {
@@ -175,7 +182,7 @@
         "operation": "getAll",
         "limit": 1,
         "filters": {
-          "query": "=WHERE DisplayName = '{{ $json.name }}'"
+          "query": "=WHERE DisplayName = '{{ String($json.name).replace(/'/g, \"\\'\") }}'"
         }
       },
       "credentials": {

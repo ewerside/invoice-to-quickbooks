@@ -48,6 +48,7 @@ def upload(client: httpx.Client, url: str, path: Path) -> dict:
         body.get("bill_id")
         or ",".join(body.get("issues", []))
         or body.get("detail", "")
+        or body.get("reason", "")
         or body.get("message", "")
     )
     return {
@@ -76,7 +77,8 @@ def main() -> None:
 
     url = f"{n8n_base_url()}/webhook/invoice-intake"
     rows = []
-    with httpx.Client(timeout=180) as client:
+    headers = {"X-Intake-Token": env("INTAKE_TOKEN")}
+    with httpx.Client(timeout=180, headers=headers) as client:
         for path in files:
             row = upload(client, url, path)
             rows.append(row)

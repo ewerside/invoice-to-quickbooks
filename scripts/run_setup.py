@@ -71,7 +71,12 @@ def main() -> None:
     url = f"{n8n_base_url()}/webhook/{env('QBO_SETUP_PATH')}"
     vendors = load_vendors()
     try:
-        resp = httpx.post(url, json={"vendors": vendors}, timeout=180)
+        resp = httpx.post(
+            url,
+            json={"vendors": vendors},
+            headers={"X-Intake-Token": env("INTAKE_TOKEN")},
+            timeout=180,
+        )
     except httpx.HTTPError as exc:
         sys.exit(f"setup webhook unreachable: {exc}")
     if resp.status_code >= 400:
