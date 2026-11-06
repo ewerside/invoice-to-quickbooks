@@ -1,0 +1,255 @@
+{
+  "name": "portfolio qbo setup",
+  "nodes": [
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [0, 300],
+      "webhookId": "2b6f1c3e-5a10-4c1e-9d01-0000000000aa",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "{{QBO_SETUP_PATH}}",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000002",
+      "name": "Currencies",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [220, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "https://sandbox-quickbooks.api.intuit.com/v3/company/{{QBO_REALM_ID}}/query",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "query", "value": "select * from CompanyCurrency" },
+            { "name": "minorversion", "value": "75" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Accept", "value": "application/json" }]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "quickBooksOAuth2Api": { "id": "{{CRED_QUICKBOOKS}}", "name": "portfolio QuickBooks" }
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000003",
+      "name": "GBP active?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [440, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 3 },
+          "conditions": [
+            {
+              "id": "2b6f1c3e-5a10-4c1e-9d01-0000000000c1",
+              "leftValue": "={{ ($json.QueryResponse.CompanyCurrency || []).some(c => c.Code === 'GBP' && c.Active) }}",
+              "rightValue": "",
+              "operator": { "type": "boolean", "operation": "true", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000004",
+      "name": "Add GBP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [660, 420],
+      "parameters": {
+        "method": "POST",
+        "url": "https://sandbox-quickbooks.api.intuit.com/v3/company/{{QBO_REALM_ID}}/companycurrency?minorversion=75",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Accept", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"Code\": \"GBP\" }",
+        "options": {}
+      },
+      "credentials": {
+        "quickBooksOAuth2Api": { "id": "{{CRED_QUICKBOOKS}}", "name": "portfolio QuickBooks" }
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000005",
+      "name": "Vendor list",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One item per vendor from the request body.\nreturn $('Webhook').first().json.body.vendors.map(vendor => ({ json: vendor }));"
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000006",
+      "name": "Loop vendors",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1100, 300],
+      "parameters": { "batchSize": 1, "options": {} }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000007",
+      "name": "Find vendor",
+      "type": "n8n-nodes-base.quickbooks",
+      "typeVersion": 1,
+      "position": [1320, 400],
+      "alwaysOutputData": true,
+      "parameters": {
+        "resource": "vendor",
+        "operation": "getAll",
+        "limit": 1,
+        "filters": { "query": "=WHERE DisplayName = '{{ $json.name }}'" }
+      },
+      "credentials": {
+        "quickBooksOAuth2Api": { "id": "{{CRED_QUICKBOOKS}}", "name": "portfolio QuickBooks" }
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000008",
+      "name": "Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1540, 400],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 3 },
+          "conditions": [
+            {
+              "id": "2b6f1c3e-5a10-4c1e-9d01-0000000000c2",
+              "leftValue": "={{ $json.Id }}",
+              "rightValue": "",
+              "operator": { "type": "string", "operation": "exists", "singleValue": true }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000009",
+      "name": "Create vendor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1760, 500],
+      "parameters": {
+        "method": "POST",
+        "url": "https://sandbox-quickbooks.api.intuit.com/v3/company/{{QBO_REALM_ID}}/vendor?minorversion=75",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Accept", "value": "application/json" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ (v => ({ DisplayName: v.name, CompanyName: v.name, CurrencyRef: { value: v.currency }, BillAddr: { Line1: v.line1, City: v.city, CountrySubDivisionCode: v.state, PostalCode: v.postal_code, Country: v.country } }))($('Loop vendors').item.json) }}",
+        "options": {}
+      },
+      "credentials": {
+        "quickBooksOAuth2Api": { "id": "{{CRED_QUICKBOOKS}}", "name": "portfolio QuickBooks" }
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000010",
+      "name": "Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1320, 160],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// The loop hands back every vendor: found ones as they came from QuickBooks,\n// new ones wrapped in { Vendor } by the create call.\nconst vendors = $input.all().map(item => {\n  const vendor = item.json.Vendor || item.json;\n  return { id: vendor.Id, name: vendor.DisplayName, currency: vendor.CurrencyRef?.value, created: Boolean(item.json.Vendor) };\n});\nreturn [{ json: { vendors } }];"
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000011",
+      "name": "Expense accounts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1540, 160],
+      "parameters": {
+        "method": "GET",
+        "url": "https://sandbox-quickbooks.api.intuit.com/v3/company/{{QBO_REALM_ID}}/query",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "query", "value": "select * from Account where AccountType = 'Expense' maxresults 200" },
+            { "name": "minorversion", "value": "75" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "Accept", "value": "application/json" }]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "quickBooksOAuth2Api": { "id": "{{CRED_QUICKBOOKS}}", "name": "portfolio QuickBooks" }
+      }
+    },
+    {
+      "id": "2b6f1c3e-5a10-4c1e-9d01-000000000012",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [1760, 160],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { vendors: $('Summary').first().json.vendors, accounts: ($json.QueryResponse.Account || []).map(a => ({ id: a.Id, name: a.Name, subtype: a.AccountSubType })) } }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Currencies", "type": "main", "index": 0 }]] },
+    "Currencies": { "main": [[{ "node": "GBP active?", "type": "main", "index": 0 }]] },
+    "GBP active?": {
+      "main": [
+        [{ "node": "Vendor list", "type": "main", "index": 0 }],
+        [{ "node": "Add GBP", "type": "main", "index": 0 }]
+      ]
+    },
+    "Add GBP": { "main": [[{ "node": "Vendor list", "type": "main", "index": 0 }]] },
+    "Vendor list": { "main": [[{ "node": "Loop vendors", "type": "main", "index": 0 }]] },
+    "Loop vendors": {
+      "main": [
+        [{ "node": "Summary", "type": "main", "index": 0 }],
+        [{ "node": "Find vendor", "type": "main", "index": 0 }]
+      ]
+    },
+    "Find vendor": { "main": [[{ "node": "Exists?", "type": "main", "index": 0 }]] },
+    "Exists?": {
+      "main": [
+        [{ "node": "Loop vendors", "type": "main", "index": 0 }],
+        [{ "node": "Create vendor", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create vendor": { "main": [[{ "node": "Loop vendors", "type": "main", "index": 0 }]] },
+    "Summary": { "main": [[{ "node": "Expense accounts", "type": "main", "index": 0 }]] },
+    "Expense accounts": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" }
+}
