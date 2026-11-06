@@ -13,14 +13,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import DOCS_DIR, env
 
-# Same wording as the Slack alert in the n8n workflow.
+# Short versions of the Slack reasons; the numbers are in the columns next to them.
 REASONS = {
     "missing_field": "a required field is empty",
-    "sum_mismatch": "line items or totals do not add up",
-    "bad_dates": "due date is missing, invalid or before the invoice date",
+    "sum_mismatch": "line items, subtotal, tax and total do not add up",
+    "bad_dates": "a date is missing or not valid, or the due date is before the invoice date",
     "bad_tax_id": "tax id is not a valid EIN or UK VAT number",
     "duplicate": "this invoice number was already posted for this vendor",
     "unknown_vendor": "vendor is not in QuickBooks",
+    "currency_mismatch": "invoice currency is not the vendor's currency in QuickBooks",
 }
 HEADERS = [
     "File",
@@ -76,6 +77,11 @@ def main() -> None:
                 created_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M"),
             ]
         )
+        # File names and vendor names come from outside. A value like
+        # =HYPERLINK(...) must stay text, not turn into a live formula.
+        for cell in sheet[sheet.max_row]:
+            if isinstance(cell.value, str):
+                cell.data_type = "s"
     for column, width in zip("ABCDEFGHIJKL", WIDTHS):
         sheet.column_dimensions[column].width = width
     for row in sheet.iter_rows(min_row=2, min_col=7, max_col=9):

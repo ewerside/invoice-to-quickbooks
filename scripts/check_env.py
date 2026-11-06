@@ -68,9 +68,12 @@ def check_supabase() -> None:
     try:
         with psycopg.connect(env("DATABASE_URL"), connect_timeout=TIMEOUT) as conn:
             conn.execute("select 1").fetchone()
-    except psycopg.OperationalError as exc:
-        # The message can echo the host but never the password.
-        raise RuntimeError(f"cannot connect: {str(exc).strip()[:300]}") from None
+    except psycopg.Error:
+        # libpq errors can quote parts of a malformed URL, password included, so print none of it.
+        raise RuntimeError(
+            "cannot connect. Check DATABASE_URL and URL-encode special "
+            "characters in the password."
+        ) from None
 
 
 def check_slack() -> None:
