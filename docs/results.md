@@ -1,10 +1,11 @@
 # Results
 
-Scored on 2026-11-05: 50 synthetic invoices, model claude-sonnet-5-5. Text and dates must match exactly. Amounts can be off by 0.01 at most.
+Scored on 2026-11-06: 50 synthetic invoices, model claude-sonnet-5-5. Text and dates must match exactly. Amounts can be off by 0.01 at most.
 
-## Run 1: first prompt
+## Run 1
 
-Outcome: 5 exception, 45 posted. Average 7.1 s per invoice.
+Outcome: 45 posted, 5 exceptions.
+Upload to bill took 7.7 s on average.
 
 ### Planted errors
 
@@ -20,7 +21,7 @@ Caught 5 of 5.
 
 ### False alarms
 
-0 of 45 clean invoices did not post.
+None: all 45 clean invoices posted.
 
 ### Field accuracy
 
@@ -39,6 +40,8 @@ Caught 5 of 5.
 | line values (qty, unit price, amount) | 165/165 | 100.0% |
 | line descriptions | 165/165 | 100.0% |
 
+Claude API cost: 2,957 input and 449 output tokens per invoice on average, about $0.01 each ($0.52 for the 50), from the token counts the API returned in this run.
+
 No field was under 95%, so I kept the first extraction prompt and there is only one run.
 
-These PDFs are generated, not scanned, and every layout prints its labels clearly. Real vendor invoices (scans, photos, handwritten notes) will score lower, which is why the rules and the exception list matter more than the extraction score.
+These PDFs are generated, not scanned, so real invoices will score lower on extraction. A misread amount still fails the sum check and a misread vendor name fails the QuickBooks lookup, so those go to the exception list instead of the books.

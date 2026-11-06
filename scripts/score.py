@@ -127,13 +127,18 @@ def render(label: str, truth: dict, log: dict, outcomes: dict) -> str:
     statuses = {}
     for row in log.values():
         statuses[row["status"]] = statuses.get(row["status"], 0) + 1
-    seconds = [float(r["seconds"]) for r in log.values()]
+    to_bill = [float(r["seconds"]) for r in log.values() if r["status"] == "posted"]
     out = [f"## {label}", ""]
-    out.append(
-        "Outcome: "
-        + ", ".join(f"{count} {status}" for status, count in sorted(statuses.items()))
-        + f". Average {sum(seconds) / len(seconds):.1f} s per invoice."
+    plurals = {"exception": "exceptions", "failed": "failures"}
+    outcome = ", ".join(
+        f"{count} {plurals.get(status, status) if count > 1 else status}"
+        for status, count in sorted(statuses.items(), reverse=True)
     )
+    out.append(f"Outcome: {outcome}.")
+    if to_bill:
+        out.append(
+            f"Upload to bill took {sum(to_bill) / len(to_bill):.1f} s on average."
+        )
 
     planted = [r for r in truth.values() if r["expected_status"] != "ok"]
     caught = 0
@@ -152,7 +157,10 @@ def render(label: str, truth: dict, log: dict, outcomes: dict) -> str:
     clean = [r for r in truth.values() if r["expected_status"] == "ok"]
     alarms = [r for r in clean if log.get(r["file"], {}).get("status") != "posted"]
     out += ["", "### False alarms", ""]
-    out.append(f"{len(alarms)} of {len(clean)} clean invoices did not post.")
+    if alarms:
+        out.append(f"{len(alarms)} of {len(clean)} clean invoices did not post.")
+    else:
+        out.append(f"None: all {len(clean)} clean invoices posted.")
     if alarms:
         out += ["", "| File | Result | Why |", "| --- | --- | --- |"]
         for row in alarms:
