@@ -10,7 +10,8 @@ A bookkeeping firm gets hundreds of vendor invoices as PDFs from its clients and
 
 ```mermaid
 flowchart LR
-    A[PDF to webhook] --> B[Hash file]
+    A[PDF to webhook] --> P[Read PDF]
+    P --> B[Hash file]
     B --> C{Seen before?}
     C -- yes --> S[already_processed]
     C -- no --> D[Extract with Claude]
