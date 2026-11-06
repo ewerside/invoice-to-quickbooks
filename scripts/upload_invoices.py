@@ -2,7 +2,7 @@
 
 Usage:
   python scripts/upload_invoices.py                 all PDFs in data/invoices, by name
-  python scripts/upload_invoices.py --files a.pdf b.pdf
+  python scripts/upload_invoices.py --files a.pdf b.pdf   log goes to upload_log_files.csv
   python scripts/upload_invoices.py --reset         empty the four tables first
 """
 
@@ -84,7 +84,10 @@ def main() -> None:
                 f"{row['file']:<22} {row['status']:<17} {row['detail']}  ({row['seconds']}s)"
             )
 
-    log_path = DATA_DIR / "upload_log.csv"
+    # score.py reads upload_log.csv to tie bills back to files, so a few-file
+    # test run must not overwrite the log of the full batch.
+    log_name = "upload_log_files.csv" if args.files else "upload_log.csv"
+    log_path = DATA_DIR / log_name
     with log_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=LOG_FIELDS)
         writer.writeheader()
