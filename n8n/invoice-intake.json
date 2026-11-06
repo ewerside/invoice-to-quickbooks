@@ -1,0 +1,778 @@
+{
+  "name": "portfolio invoice intake",
+  "nodes": [
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "5c3e9a10-7f21-4d6b-8e44-000000000101",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "invoice-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000002",
+      "name": "Hash file",
+      "type": "n8n-nodes-base.crypto",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "action": "hash",
+        "type": "SHA256",
+        "binaryData": true,
+        "binaryPropertyName": "file",
+        "dataPropertyName": "file_hash",
+        "encoding": "hex"
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000021",
+      "name": "Read PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// One PDF per request. The model needs it as base64 text.\nconst item = $input.first();\nconst file = item.binary?.file;\nif (!file) {\n  throw new Error('No PDF found. Send it as multipart form field \"file\".');\n}\nconst buffer = await this.helpers.getBinaryDataBuffer(0, 'file');\n// Keep the binary so the next node can hash the file.\nreturn [{\n  json: { file_name: file.fileName, pdf_base64: buffer.toString('base64') },\n  binary: item.binary,\n}];"
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000003",
+      "name": "Seen file?",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with ins as (\n  insert into invoices_seen (file_hash, file_name) values ($1, $2)\n  on conflict (file_hash) do nothing\n  returning file_hash\n)\nselect exists(select 1 from ins) as is_new",
+        "options": {
+          "queryReplacement": "={{ [ $json.file_hash, $json.file_name ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_SUPABASE}}",
+          "name": "portfolio Supabase"
+        }
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000004",
+      "name": "New file?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5c3e9a10-7f21-4d6b-8e44-000000000904",
+              "leftValue": "={{ $json.is_new }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000005",
+      "name": "Respond seen",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1100,
+        480
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: \"already_processed\" } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000006",
+      "name": "Extract",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1320,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{EXTRACT_MODEL}}\",\n  \"max_tokens\": 4096,\n  \"output_config\": { \"effort\": \"low\" },\n  \"tool_choice\": { \"type\": \"auto\", \"disable_parallel_tool_use\": true },\n  \"tools\": [ {\n    \"name\": \"record_invoice\",\n    \"description\": \"Record the fields of one vendor invoice exactly as printed on it.\",\n    \"strict\": true,\n    \"input_schema\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"vendor_name\", \"vendor_tax_id\", \"invoice_number\", \"invoice_date\", \"due_date\", \"currency\", \"line_items\", \"subtotal\", \"tax\", \"total\"],\n      \"properties\": {\n        \"vendor_name\": { \"anyOf\": [ { \"type\": \"string\" }, { \"type\": \"null\" } ] },\n        \"vendor_tax_id\": { \"anyOf\": [ { \"type\": \"string\" }, { \"type\": \"null\" } ], \"description\": \"EIN or VAT number exactly as printed\" },\n        \"invoice_number\": { \"anyOf\": [ { \"type\": \"string\" }, { \"type\": \"null\" } ] },\n        \"invoice_date\": { \"anyOf\": [ { \"type\": \"string\" }, { \"type\": \"null\" } ], \"description\": \"YYYY-MM-DD\" },\n        \"due_date\": { \"anyOf\": [ { \"type\": \"string\" }, { \"type\": \"null\" } ], \"description\": \"YYYY-MM-DD\" },\n        \"currency\": { \"anyOf\": [ { \"type\": \"string\" }, { \"type\": \"null\" } ], \"description\": \"Three-letter code, for example USD or GBP\" },\n        \"line_items\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"object\",\n            \"additionalProperties\": false,\n            \"required\": [\"description\", \"quantity\", \"unit_price\", \"amount\"],\n            \"properties\": {\n              \"description\": { \"type\": \"string\" },\n              \"quantity\": { \"anyOf\": [ { \"type\": \"number\" }, { \"type\": \"null\" } ] },\n              \"unit_price\": { \"anyOf\": [ { \"type\": \"number\" }, { \"type\": \"null\" } ] },\n              \"amount\": { \"anyOf\": [ { \"type\": \"number\" }, { \"type\": \"null\" } ] }\n            }\n          }\n        },\n        \"subtotal\": { \"anyOf\": [ { \"type\": \"number\" }, { \"type\": \"null\" } ] },\n        \"tax\": { \"anyOf\": [ { \"type\": \"number\" }, { \"type\": \"null\" } ] },\n        \"total\": { \"anyOf\": [ { \"type\": \"number\" }, { \"type\": \"null\" } ] }\n      }\n    }\n  } ],\n  \"messages\": [ {\n    \"role\": \"user\",\n    \"content\": [\n      { \"type\": \"document\", \"source\": { \"type\": \"base64\", \"media_type\": \"application/pdf\", \"data\": \"{{ $('Hash file').first().json.pdf_base64 }}\" } },\n      { \"type\": \"text\", \"text\": \"Read this vendor invoice and call record_invoice once. Copy every value exactly as printed. Do not calculate, round, fix or fill in anything. Write dates as YYYY-MM-DD and the currency as a three-letter code. Use null for anything the invoice does not show.\" }\n    ]\n  } ]\n}",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "{{CRED_ANTHROPIC}}",
+          "name": "portfolio Anthropic"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000007",
+      "name": "Validate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Business rules. Each rule gets the extracted invoice and returns a short code or null.\nconst TEXT_FIELDS = ['vendor_name', 'vendor_tax_id', 'invoice_number', 'invoice_date', 'due_date', 'currency'];\nconst NUMBER_FIELDS = ['subtotal', 'tax', 'total'];\nconst cents = (value) => Math.round(Number(value) * 100);\n\nfunction missingField(inv) {\n  const emptyText = TEXT_FIELDS.some((key) => !String(inv[key] ?? '').trim());\n  const emptyNumber = NUMBER_FIELDS.some((key) => typeof inv[key] !== 'number');\n  const noLines = !Array.isArray(inv.line_items) || inv.line_items.length === 0;\n  return emptyText || emptyNumber || noLines ? 'missing_field' : null;\n}\n\nfunction sumMismatch(inv) {\n  if (!Array.isArray(inv.line_items) || NUMBER_FIELDS.some((key) => typeof inv[key] !== 'number')) {\n    return null; // missing_field already covers this\n  }\n  const lines = inv.line_items.reduce((sum, line) => sum + cents(line.amount ?? 0), 0);\n  const off = (a, b) => Math.abs(a - b) > 1; // 0.01 tolerance\n  return off(lines, cents(inv.subtotal)) || off(cents(inv.subtotal) + cents(inv.tax), cents(inv.total))\n    ? 'sum_mismatch'\n    : null;\n}\n\nfunction isRealDate(text) {\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(text ?? '')) return false;\n  const parsed = new Date(`${text}T00:00:00Z`);\n  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === text;\n}\n\nfunction badDates(inv) {\n  if (!isRealDate(inv.invoice_date) || !isRealDate(inv.due_date)) return 'bad_dates';\n  return inv.due_date < inv.invoice_date ? 'bad_dates' : null;\n}\n\nfunction badTaxId(inv) {\n  const id = String(inv.vendor_tax_id ?? '').trim();\n  return /^\\d{2}-\\d{7}$/.test(id) || /^GB\\d{9}$/.test(id) ? null : 'bad_tax_id';\n}\n\nconst RULES = [missingField, sumMismatch, badDates, badTaxId];\n\nconst response = $input.first().json;\nconst call = (response.content ?? []).find((block) => block.type === 'tool_use' && block.name === 'record_invoice');\nconst extracted = call ? call.input : {};\n// No tool call means nothing was read, which is a missing field from the bookkeeper's view.\nconst issues = call ? RULES.map((rule) => rule(extracted)).filter(Boolean) : ['missing_field'];\nconst file = $('Hash file').first().json;\n\nreturn [{\n  json: {\n    file_name: file.file_name,\n    file_hash: file.file_hash,\n    extracted,\n    issues,\n    stop_reason: response.stop_reason,\n  },\n}];"
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000008",
+      "name": "Duplicate?",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1760,
+        300
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "select exists(\n  select 1 from invoices_posted where vendor = $1 and invoice_number = $2\n) as duplicate",
+        "options": {
+          "queryReplacement": "={{ [ $json.extracted.vendor_name ?? '', $json.extracted.invoice_number ?? '' ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_SUPABASE}}",
+          "name": "portfolio Supabase"
+        }
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000009",
+      "name": "Find vendor",
+      "type": "n8n-nodes-base.quickbooks",
+      "typeVersion": 1,
+      "position": [
+        1980,
+        300
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "resource": "vendor",
+        "operation": "getAll",
+        "limit": 1,
+        "filters": {
+          "query": "=WHERE DisplayName = '{{ String($('Validate').first().json.extracted.vendor_name ?? '').replace(/'/g, \"\\\\'\") }}'"
+        }
+      },
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "{{CRED_QUICKBOOKS}}",
+          "name": "portfolio QuickBooks"
+        }
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000010",
+      "name": "Collect issues",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Join the rule results with the duplicate and vendor lookups. One invoice per run.\nconst WORDS = {\n  missing_field: 'a required field is empty',\n  sum_mismatch: 'line items or totals do not add up',\n  bad_dates: 'due date is missing, invalid or before the invoice date',\n  bad_tax_id: 'tax id is not a valid EIN or UK VAT number',\n  duplicate: 'this invoice number was already posted for this vendor',\n  unknown_vendor: 'vendor is not in QuickBooks',\n};\nconst checked = $('Validate').first().json;\nconst vendor = $input.first().json;\nconst issues = [...checked.issues];\nif ($('Duplicate?').first().json.duplicate === true) issues.push('duplicate');\nif (!vendor.Id) issues.push('unknown_vendor');\n\nconst inv = checked.extracted;\nconst alertText = [\n  checked.file_name,\n  inv.vendor_name || 'no vendor name',\n  inv.invoice_number || 'no invoice number',\n  issues.map((code) => WORDS[code]).join('; '),\n].join(' | ');\n\nreturn [{\n  json: {\n    ...checked,\n    issues,\n    vendor_id: vendor.Id ?? null,\n    vendor_currency: vendor.CurrencyRef?.value ?? null,\n    alert_text: alertText,\n  },\n}];"
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000011",
+      "name": "Has issues?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2420,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "5c3e9a10-7f21-4d6b-8e44-000000000911",
+              "leftValue": "={{ $json.issues }}",
+              "rightValue": "",
+              "operator": {
+                "type": "array",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000012",
+      "name": "Save exception",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2640,
+        160
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into invoice_exceptions (file_name, vendor, invoice_number, issues, extracted)\nvalues ($1, $2, $3, array(select jsonb_array_elements_text($4::jsonb)), $5::jsonb)",
+        "options": {
+          "queryReplacement": "={{ [ $json.file_name, $json.extracted.vendor_name ?? '', $json.extracted.invoice_number ?? '', JSON.stringify($json.issues), JSON.stringify($json.extracted) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_SUPABASE}}",
+          "name": "portfolio Supabase"
+        }
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000013",
+      "name": "Alert Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2860,
+        160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{SLACK_WEBHOOK_URL}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: $('Collect issues').first().json.alert_text } }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000014",
+      "name": "Respond exception",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3080,
+        160
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: \"exception\", issues: $('Collect issues').first().json.issues } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000022",
+      "name": "Exchange rate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2640,
+        420
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://sandbox-quickbooks.api.intuit.com/v3/company/{{QBO_REALM_ID}}/exchangerate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {},
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "sourcecurrencycode",
+              "value": "={{ $json.vendor_currency }}"
+            },
+            {
+              "name": "asofdate",
+              "value": "={{ $json.extracted.invoice_date }}"
+            },
+            {
+              "name": "minorversion",
+              "value": "75"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "{{CRED_QUICKBOOKS}}",
+          "name": "portfolio QuickBooks"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000015",
+      "name": "Create bill",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2860,
+        420
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://sandbox-quickbooks.api.intuit.com/v3/company/{{QBO_REALM_ID}}/bill?minorversion=75",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "quickBooksOAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ ((invoice, inv) => ({\n  VendorRef: { value: invoice.vendor_id },\n  CurrencyRef: { value: invoice.vendor_currency },\n  ExchangeRate: $json.ExchangeRate.Rate,\n  TxnDate: inv.invoice_date,\n  DueDate: inv.due_date,\n  DocNumber: inv.invoice_number,\n  PrivateNote: 'Posted from ' + invoice.file_name,\n  Line: [\n    ...inv.line_items.map(line => ({\n      DetailType: 'AccountBasedExpenseLineDetail',\n      Amount: line.amount,\n      Description: line.description + ' (' + line.quantity + ' x ' + line.unit_price + ')',\n      AccountBasedExpenseLineDetail: { AccountRef: { value: '{{EXPENSE_ACCOUNT_ID}}' } },\n    })),\n    ...(inv.tax ? [ {\n      DetailType: 'AccountBasedExpenseLineDetail',\n      Amount: inv.tax,\n      Description: 'Tax as printed on the invoice',\n      AccountBasedExpenseLineDetail: { AccountRef: { value: '{{EXPENSE_ACCOUNT_ID}}' } },\n    } ] : []),\n  ],\n}))($('Collect issues').first().json, $('Collect issues').first().json.extracted) }}"
+      },
+      "credentials": {
+        "quickBooksOAuth2Api": {
+          "id": "{{CRED_QUICKBOOKS}}",
+          "name": "portfolio QuickBooks"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000016",
+      "name": "Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3080,
+        420
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "insert into invoices_posted (vendor, invoice_number, bill_id, total, extracted)\nvalues ($1, $2, $3, $4, $5::jsonb)",
+        "options": {
+          "queryReplacement": "={{ [ $('Collect issues').first().json.extracted.vendor_name, $('Collect issues').first().json.extracted.invoice_number, $json.Bill.Id, $json.Bill.TotalAmt, JSON.stringify($('Collect issues').first().json.extracted) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_SUPABASE}}",
+          "name": "portfolio Supabase"
+        }
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000017",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3300,
+        420
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: \"posted\", bill_id: $('Create bill').first().json.Bill.Id } }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000018",
+      "name": "Queue failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2640,
+        680
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "with failure as (\n  insert into invoice_failures (file_name, node, error) values ($1, $2, $3)\n  returning file_name, node, error\n),\ncleared as (\n  delete from invoices_seen where file_hash = $4\n)\nselect file_name, node, error from failure",
+        "options": {
+          "queryReplacement": "={{ [ $('Hash file').first().json.file_name, $prevNode.name, (typeof $json.error === 'string' ? $json.error : [$json.error?.message, $json.error?.description].filter(Boolean).join(' | ') || 'unknown error').slice(0, 2000), $('Hash file').first().json.file_hash ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "{{CRED_SUPABASE}}",
+          "name": "portfolio Supabase"
+        }
+      }
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000019",
+      "name": "Alert failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2860,
+        680
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "{{SLACK_WEBHOOK_URL}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { text: 'Failed, queued for retry: ' + $json.file_name + ' | ' + $json.node + ' | ' + String($json.error).slice(0, 200) } }}",
+        "options": {}
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "5c3e9a10-7f21-4d6b-8e44-000000000020",
+      "name": "Respond failure",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3080,
+        680
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: \"queued_for_retry\", file: $('Hash file').first().json.file_name } }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Read PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read PDF": {
+      "main": [
+        [
+          {
+            "node": "Hash file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash file": {
+      "main": [
+        [
+          {
+            "node": "Seen file?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Seen file?": {
+      "main": [
+        [
+          {
+            "node": "New file?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New file?": {
+      "main": [
+        [
+          {
+            "node": "Extract",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond seen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract": {
+      "main": [
+        [
+          {
+            "node": "Validate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate": {
+      "main": [
+        [
+          {
+            "node": "Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Find vendor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find vendor": {
+      "main": [
+        [
+          {
+            "node": "Collect issues",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Collect issues": {
+      "main": [
+        [
+          {
+            "node": "Has issues?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has issues?": {
+      "main": [
+        [
+          {
+            "node": "Save exception",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Exchange rate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Exchange rate": {
+      "main": [
+        [
+          {
+            "node": "Create bill",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save exception": {
+      "main": [
+        [
+          {
+            "node": "Alert Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert Slack": {
+      "main": [
+        [
+          {
+            "node": "Respond exception",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create bill": {
+      "main": [
+        [
+          {
+            "node": "Log",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Queue failure": {
+      "main": [
+        [
+          {
+            "node": "Alert failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert failure": {
+      "main": [
+        [
+          {
+            "node": "Respond failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
